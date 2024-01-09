@@ -82,6 +82,18 @@ def make_array(tensor):
 
 
 def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max_value=10000, rri_k = 1):
+    """
+    Main function of FastVSDF
+    :param F1_path: input fine image at T1 path. Tif format
+    :param C1_path: input coarse image path at T1. Tif format, same size as F1_path
+    :param C2_path: input coarse image path at T2 (predicting date). Tif format, same size as F1_path
+    :param fastvsdf_path: output file path
+    :param base_cluster: land cover types, e.g., 5
+    :param P: scale factor between coarse image and fine image
+    :param max_value: max value of input data, minimum is 0 as default
+    :param rri_k: k in Eq.(11)
+    :return: fastvsdf_path
+    """
     """""""""""""""""""""""""""""""""""""""""""""
     Prepare the fusion
     """""""""""""""""""""""""""""""""""""""""""""
@@ -108,12 +120,12 @@ def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max
     F1_img_small = downsample_small_size(F1_img, P)
     C1_img_small = downsample_small_size(C1_img, P)
     C2_img_small = downsample_small_size(C2_img, P)
+    delta_M_img_small = C2_img_small - C1_img_small
 
     # RRI
     rmse_F1_C1 = np.average(rmse(F1_img_small, C1_img_small))
     rmse_C2_C1 = np.average(rmse(C2_img_small, C1_img_small))
-    RRI = rri_k * rmse_C2_C1 / rmse_F1_C1
-    delta_M_img_small = C2_img_small - C1_img_small
+    RRI = rri_k * rmse_C2_C1 / rmse_F1_C1 # Eq. (11)
 
     # get edge pixels
     pca = PCA(n_components=1)
@@ -127,7 +139,7 @@ def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max
     STEP 1 unmix with FAVC
     """""""""""""""""""""""""""""""""""""""""""""
     # fast guided temporal change
-    delta_M_img_FGF_sr = FastGuidedFilter(P, 1e-7)(C1_sr, make_tensor(C2_img - C1_img), F1_sr)
+    delta_M_img_FGF_sr = FastGuidedFilter(P, 1e-7)(C1_sr, make_tensor(C2_img - C1_img), F1_sr) # Eq. (9)
     delta_M_img_GF = make_array(delta_M_img_FGF_sr)
 
     for band in range(delta_M_img_GF.shape[-1]):
@@ -139,10 +151,10 @@ def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max
     u[:, :, band_num:] = F1_img
 
     # define the clustering number
-    n_clusters = max(int(round(base_cluster ** 2 * (1-1/RRI))), base_cluster)
+    n_clusters = max(int(round(base_cluster ** 2 * (1-1/RRI))), base_cluster) # Eq. (12)
 
     # feature pixels
-    random_num = int(n_clusters * 100)
+    random_num = int(n_clusters * 100) # Eq. (10)
     edge_value = u[edges_cube_sum_2 == 1].reshape(int(np.sum(edges_cube_sum_2[:, :, 0])), band_num * 2)
     classifer = KMeans(n_clusters=n_clusters)
     classifer.fit(edge_value[np.random.choice(edge_value.shape[0], random_num, replace=False), :])
@@ -168,7 +180,6 @@ def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max
         for i in range(label_list.shape[0]):
             pre_delta_img[:, :, b][classes_img == label_list[i]] = b_para[i][0, 0]
 
-    
     """""""""""""""""""""""""""""""""""""""""""""
     STEP 2 distribute global residuals
     """""""""""""""""""""""""""""""""""""""""""""
@@ -176,9 +187,8 @@ def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max
     difference = enlarge_size(difference_small, P)
     difference_FGF_sr = FastGuidedFilter(int(P / 2), 1e-3)(C1_sr, make_tensor(difference), F1_sr)
     difference_new = make_array(difference_FGF_sr)
-    pre_delta_img = difference_new + pre_delta_img
+    pre_delta_img = difference_new + pre_delta_img # Eq. (14)
 
-    
     """""""""""""""""""""""""""""""""""""""""""""
     STEP 3 distribute local residuals
     """""""""""""""""""""""""""""""""""""""""""""
@@ -191,7 +201,7 @@ def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max
     classes_img = classifer.predict(F1_img.reshape(y_f_num * x_f_num, band_num)).reshape(y_f_num, x_f_num)
     label_list = np.unique(classes_img.flatten())
 
-    # in-class Gaussian weight function
+    # in-class Gaussian weight function Eq. (15)&(16)
     for label in label_list:
         fix_positon = (classes_img == label)
         fix_array = np.where(fix_positon, 1, np.nan)
@@ -215,4 +225,4 @@ def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max
                                     pre_F2_img)
 
     save_img(pre_F2_img * max_value, fastvsdf_path)
-    return None
+    return fastvsdf_path
