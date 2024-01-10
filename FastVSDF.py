@@ -28,7 +28,7 @@ def read_img(path):
 def save_img(array, path):
     driver = gdal.GetDriverByName("GTiff")
     if len(array.shape) == 2:
-        dst = driver.Create(path, array.shape[1], array.shape[0], 1, 2)
+        dst = driver.Create(path, array.shape[1], array.shape[0], 1, 6)
         dst.GetRasterBand(1).WriteArray(array)
     else:
         n_band = array.shape[-1]
@@ -80,7 +80,6 @@ def make_array(tensor):
     return tensor[0].detach().numpy().transpose([1, 2, 0])
 
 
-
 def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max_value=10000, rri_k = 1):
     """
     Main function of FastVSDF
@@ -91,7 +90,7 @@ def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max
     :param base_cluster: land cover types, e.g., 5
     :param P: scale factor between coarse image and fine image
     :param max_value: max value of input data, minimum is 0 as default
-    :param rri_k: k in Eq.(11)
+    :param rri_k: k in Eq.(11), 1 is recommended for Landsat and MODIS pairs
     :return: fastvsdf_path
     """
     """""""""""""""""""""""""""""""""""""""""""""
@@ -102,14 +101,15 @@ def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max
     C1_img = (100+read_img(C1_path))[:, :, :] / max_value
     C2_img = (100+read_img(C2_path))[:, :, :] / max_value
 
-    C1_img[(C1_img<-0) | (C2_img<-0)] = 0
-    C2_img[(C1_img<-0) | (C2_img<-0)] = 0
+    # process invaild value
+    C1_img[(C1_img<0) | (C2_img>1)] = 0
+    C2_img[(C1_img<0) | (C2_img>1)] = 0
 
     # prepare for fusion
-    x_f_num = F1_img.shape[1]
-    y_f_num = F1_img.shape[0]
-    x_c_num = int(x_f_num / P)
-    y_c_num = int(y_f_num / P)
+    x_f_num = F1_img.shape[1] # x size of fine image
+    y_f_num = F1_img.shape[0] # y size of fine image
+    x_c_num = int(x_f_num / P) # x size of coarse image
+    y_c_num = int(y_f_num / P) # y size of coarse image
     band_num = F1_img.shape[-1]
 
     # transfer to Tensor
@@ -132,8 +132,8 @@ def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max
     x_reduction = pca.fit(F1_img_small.reshape(x_c_num * y_c_num, band_num)).transform(
         F1_img.reshape(x_f_num * y_f_num, band_num)).reshape(y_f_num, x_f_num)
     edges = feature.canny(x_reduction)
-    edges_sum = np.where(mean(edges.astype("float"), square(3)) > 0, 1, 0)
-    edges_cube_sum_2 = np.tile(edges_sum, [band_num * 2, 1, 1]).transpose(1, 2, 0)
+    edges_sum = np.where(mean(edges.astype("float"), square(3)) > 0, 1, 0) # pixels within the 3-pixel buffer around edges
+    edges_cube_sum_2 = np.tile(edges_sum, [band_num * 2, 1, 1]).transpose(1, 2, 0) # enlarge the edge size from (x_f_num, y_f_num) to (band_num * 2, x_f_num, y_f_num)
 
     """""""""""""""""""""""""""""""""""""""""""""
     STEP 1 unmix with FAVC
@@ -146,6 +146,7 @@ def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max
         delta_M_img_GF[:, :, band] = delta_M_img_GF[:, :, band] - np.min(delta_M_img_GF[:, :, band])
         delta_M_img_GF[:, :, band] = delta_M_img_GF[:, :, band] / np.max(delta_M_img_GF[:, :, band])
 
+    # fast guided temporal change + F1_img
     u = np.zeros([y_f_num, x_f_num, band_num * 2])
     u[:, :, :band_num] = delta_M_img_GF
     u[:, :, band_num:] = F1_img
@@ -153,10 +154,12 @@ def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max
     # define the clustering number
     n_clusters = max(int(round(base_cluster ** 2 * (1-1/RRI))), base_cluster) # Eq. (12)
 
-    # feature pixels
+    # select feature pixels randomly
     random_num = int(n_clusters * 100) # Eq. (10)
     edge_value = u[edges_cube_sum_2 == 1].reshape(int(np.sum(edges_cube_sum_2[:, :, 0])), band_num * 2)
     classifer = KMeans(n_clusters=n_clusters)
+
+    # K-Means clustering for FAVC
     classifer.fit(edge_value[np.random.choice(edge_value.shape[0], random_num, replace=False), :])
     classes_img = classifer.predict(u.reshape(y_f_num * x_f_num, band_num * 2)).reshape([y_f_num, x_f_num])
     label_list = np.unique(classes_img.flatten())
@@ -193,7 +196,7 @@ def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max
     STEP 3 distribute local residuals
     """""""""""""""""""""""""""""""""""""""""""""
     # fuzzy classification
-    random_num = int(base_cluster * 100)
+    random_num = int(base_cluster * 100) # base_cluster number is used here instead of FAVC cluster number
     classifer = KMeans(n_clusters=base_cluster)
     classifer.fit(
         F1_img[edges_cube_sum_2[:, :, :band_num] == 1].reshape(int(np.sum(edges_cube_sum_2[:, :, 0])), band_num)[
@@ -203,10 +206,10 @@ def FastVSDF(F1_path, C1_path, C2_path, fastvsdf_path, base_cluster=5, P=20, max
 
     # in-class Gaussian weight function Eq. (15)&(16)
     for label in label_list:
-        fix_positon = (classes_img == label)
+        fix_positon = (classes_img == label) # filter pixels from the same classification
         fix_array = np.where(fix_positon, 1, np.nan)
         fix_array[np.isnan(fix_array)] = 0
-        fix_gaussian = gaussian(fix_array, sigma=3.75)
+        fix_gaussian = gaussian(fix_array, sigma=3.75) # smaller sigma get higher efficiency
         for band in range(band_num):
             class_array = np.where(fix_positon, pre_delta_img[:, :, band], 0)
             class_gaussian = gaussian(class_array, sigma=3.75)
