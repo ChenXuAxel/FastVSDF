@@ -12,7 +12,7 @@ It takes a fine/coarse image pair at T1 and coarse image at T2 to predict fine i
     ```sh
     git clone https://github.com/ChenXuAxel/FastVSDF
     
-    cd DeepGuidedFilter && git checkout release
+    cd FastVSDF && git checkout release
     ```
 2. Install dependencies.
     ```sh
