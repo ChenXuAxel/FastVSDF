@@ -3,7 +3,7 @@ Code for FastVSDF: An Efficient Spatiotemporal Data Fusion Method for Seamless D
 
 ## Overview
 FastVSDF is an efficient spatiotemporal data fusion method. 
-It takes fine/coarse image pairs at T1 and coarse image at T2 to predict fine image at T2:
+It takes a fine/coarse image pair at T1 and coarse image at T2 to predict fine image at T2:
 ![image](https://github.com/ChenXuAxel/FastVSDF/assets/96739786/e0ec2602-403d-4efd-b056-428e7343c5e2)
 
 ## Get Started
